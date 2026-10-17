@@ -1,0 +1,5 @@
+schemaVersion: 1
+plugins:
+  application:
+    module: plugins/application
+    licenseFiles: [LICENSE]

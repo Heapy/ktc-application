@@ -1,0 +1,22 @@
+tasks:
+  installDist:
+    action: !io.heapy.ktc.plugins.application.installDist
+      moduleName: ${module.name}
+      mainClass: ${module.settings.jvm.mainClass}
+      jar: ${module.jar}
+      runtimeClasspath: ${module.runtimeClasspath}
+      settings: ${pluginSettings}
+      outputDir: ${taskOutputDir}
+  distTar:
+    action: !io.heapy.ktc.plugins.application.distTar
+      distributionDir: ${tasks.installDist.action.outputDir}
+      outputDir: ${taskOutputDir}
+  distZip:
+    action: !io.heapy.ktc.plugins.application.distZip
+      distributionDir: ${tasks.installDist.action.outputDir}
+      outputDir: ${taskOutputDir}
+
+commands:
+  - installDist
+  - distTar
+  - distZip

@@ -1,0 +1,6 @@
+modules:
+  - example
+  - plugins/application
+
+plugins:
+  - //plugins/application

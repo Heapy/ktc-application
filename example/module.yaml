@@ -1,0 +1,19 @@
+product: jvm/app
+
+dependencies:
+  - org.apache.commons:commons-lang3:3.18.0
+
+settings:
+  kotlin:
+    version: 2.4.21
+  jvm:
+    release: 17
+    mainClass: example.MainKt
+
+plugins:
+  application:
+    enabled: true
+    applicationName: hello
+    distributionName: example
+    defaultJvmArgs:
+      - "-Dexample.message=hello from the distribution"

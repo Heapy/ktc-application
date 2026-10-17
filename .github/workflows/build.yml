@@ -1,0 +1,32 @@
+name: Build
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: Heapy/setup-ktc@cc63216665ce07ce0709fe52ef4a4b0b63aeaddc # v1.1.0
+      - uses: Heapy/ktc-check@e86a342c115a59c2243c45b5a784e7003a372359 # v1.1.0
+        with:
+          platforms: jvm
+      - name: Package example (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          ./kotlin do distTar -m example
+          ./kotlin do distZip -m example
+      - name: Package example (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          ./kotlin.bat do distTar -m example
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./kotlin.bat do distZip -m example
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - run: python scripts/smoke.py

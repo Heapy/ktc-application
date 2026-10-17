@@ -24,8 +24,8 @@ for extension in ("tar", "zip"):
         root = destination / "example"
         launcher = root / ("bin/hello.bat" if os.name == "nt" else "bin/hello")
         arguments = [str(launcher), "two words", "last"]
-        if os.name == "nt":
-            arguments = ["cmd.exe", "/d", "/c", subprocess.list2cmdline(arguments)]
-        result = subprocess.run(arguments, capture_output=True, text=True, check=True)
+        # Let subprocess construct cmd.exe's outer /c quoting for a batch file.
+        result = subprocess.run(arguments, shell=os.name == "nt", capture_output=True, text=True)
+        assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         assert result.stdout.splitlines() == ["Hello from the distribution", "two words", "last"], result
         print(f"{extension}: extracted application and dependency ran successfully")

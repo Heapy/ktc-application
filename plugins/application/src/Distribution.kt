@@ -69,7 +69,8 @@ internal fun assembleDistribution(
     jars.forEach { Files.copy(it, lib.resolve(it.fileName), StandardCopyOption.COPY_ATTRIBUTES) }
     Files.writeString(conf.resolve("jvm.options"), defaultJvmArgs.joinToString("\n", postfix = "\n") { javaArgument(it) })
     val unixLauncher = bin.resolve(applicationName)
-    Files.writeString(unixLauncher, unixLauncher(mainClass))
+    val optsVariables = listOf("JAVA_OPTS", optsEnvironmentVariable(applicationName)).distinct()
+    Files.writeString(unixLauncher, unixLauncher(mainClass, optsVariables))
     if (Files.getFileStore(bin).supportsFileAttributeView("posix")) {
         Files.setPosixFilePermissions(unixLauncher, setOf(
             PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE, PosixFilePermission.OWNER_EXECUTE,
@@ -77,7 +78,7 @@ internal fun assembleDistribution(
             PosixFilePermission.OTHERS_READ, PosixFilePermission.OTHERS_EXECUTE,
         ))
     }
-    Files.writeString(bin.resolve("$applicationName.bat"), windowsLauncher(mainClass).replace("\n", "\r\n"))
+    Files.writeString(bin.resolve("$applicationName.bat"), windowsLauncher(mainClass, optsVariables).replace("\n", "\r\n"))
     return root
 }
 
@@ -94,7 +95,17 @@ private fun validateName(name: String) {
 private fun javaArgument(value: String): String =
     "\"" + value.replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
-private fun unixLauncher(mainClass: String): String = $$"""
+internal fun optsEnvironmentVariable(applicationName: String): String {
+    val name = applicationName
+        .replace(Regex("([A-Z]+)([A-Z][a-z])"), "$1_$2")
+        .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+        .replace(Regex("[^A-Za-z0-9]+"), "_")
+        .trimEnd('_')
+        .uppercase(Locale.ROOT)
+    return (if (name.first().isDigit()) "_$name" else name) + "_OPTS"
+}
+
+private fun unixLauncher(mainClass: String, optsVariables: List<String>): String = $$"""
     #!/bin/sh
     set -eu
     APP_HOME=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -103,10 +114,65 @@ private fun unixLauncher(mainClass: String): String = $$"""
     else
         JAVACMD=java
     fi
-    exec "$JAVACMD" "@$APP_HOME/conf/jvm.options" -classpath "$APP_HOME/lib/*" '$$mainClass' "$@"
+    set -- -classpath "$APP_HOME/lib/*" '$$mainClass' "$@"
+    app_arg_count=$#
+    # Tokenize options without evaluating shell substitutions or expanding wildcards.
+    for options in $${optsVariables.joinToString(" ") { "\"\${$it:-}\"" }}; do
+        quote= escaped=false started=false arg=
+        while [ -n "$options" ]; do
+            rest=${options#?}
+            char=${options%"$rest"}
+            options=$rest
+            if [ "$escaped" = true ]; then
+                if [ "$quote" = '"' ]; then
+                    case "$char" in
+                        '"'|'\'|'$'|'`') ;;
+                        *) arg=$arg'\' ;;
+                    esac
+                fi
+                arg=$arg$char
+                escaped=false
+            elif [ "$quote" = "'" ]; then
+                if [ "$char" = "'" ]; then quote=; else arg=$arg$char; fi
+            else
+                case "$char" in
+                    '\') escaped=true; started=true ;;
+                    '"'|"'")
+                        if [ -z "$quote" ]; then
+                            quote=$char; started=true
+                        elif [ "$quote" = "$char" ]; then
+                            quote=
+                        else
+                            arg=$arg$char
+                        fi ;;
+                    [[:space:]])
+                        if [ -n "$quote" ]; then
+                            arg=$arg$char
+                        elif [ "$started" = true ]; then
+                            set -- "$@" "$arg"
+                            arg= started=false
+                        fi ;;
+                    *) arg=$arg$char; started=true ;;
+                esac
+            fi
+        done
+        if [ -n "$quote" ] || [ "$escaped" = true ]; then
+            printf '%s\n' 'Unmatched quote or trailing backslash in $${optsVariables.joinToString(" or ")}.' >&2
+            exit 1
+        fi
+        if [ "$started" = true ]; then set -- "$@" "$arg"; fi
+    done
+    # Move the original classpath, main class and application arguments after the JVM options.
+    while [ "$app_arg_count" -gt 0 ]; do
+        arg=$1
+        shift
+        set -- "$@" "$arg"
+        app_arg_count=$((app_arg_count - 1))
+    done
+    exec "$JAVACMD" "@$APP_HOME/conf/jvm.options" "$@"
     """.trimIndent() + "\n"
 
-private fun windowsLauncher(mainClass: String): String = """
+private fun windowsLauncher(mainClass: String, optsVariables: List<String>): String = """
     @echo off
     setlocal DisableDelayedExpansion
     set "APP_HOME=%~dp0.."
@@ -115,7 +181,7 @@ private fun windowsLauncher(mainClass: String): String = """
     ) else (
         set "JAVACMD=java.exe"
     )
-    "%JAVACMD%" "@%APP_HOME%\conf\jvm.options" -classpath "%APP_HOME%\lib\*" "$mainClass" %*
+    "%JAVACMD%" "@%APP_HOME%\conf\jvm.options" ${optsVariables.joinToString(" ") { "%$it%" }} -classpath "%APP_HOME%\lib\*" "$mainClass" %*
     exit /b %ERRORLEVEL%
     """.trimIndent() + "\n"
 

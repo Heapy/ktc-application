@@ -11,6 +11,7 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import org.junit.jupiter.api.io.TempDir
@@ -30,19 +31,101 @@ class DistributionTest {
         val batch = Files.readString(root.resolve("bin/hello.bat"))
         assertTrue(batch.contains("\r\n"))
         assertFalse(batch.replace("\r\n", "").contains('\n'))
-        val command = if (System.getProperty("os.name").startsWith("Windows")) {
-            listOf("cmd.exe", "/d", "/c", "\"${root.resolve("bin/hello.bat")}\" \"two words\" last")
-        } else {
-            listOf(root.resolve("bin/hello").toString(), "two words", "last")
-        }
-        val process = ProcessBuilder(command).redirectErrorStream(true).apply {
-            environment()["JAVA_HOME"] = System.getProperty("java.home")
-            environment().remove("JAVA_TOOL_OPTIONS")
-            environment().remove("JDK_JAVA_OPTIONS")
-        }.start()
-        val output = process.inputStream.bufferedReader().readText().replace("\r\n", "\n")
-        assertEquals(7, process.waitFor(), output)
+        val (exitCode, output) = launch(root, "hello")
+        assertEquals(7, exitCode, output)
         assertEquals("hello \"quoted\" \\path $ % &\ntwo words\nlast\n", output)
+    }
+
+    @Test
+    fun `runtime options are additive and application options override shared options and defaults`() {
+        val root = assembleDistribution(
+            "myApp", "different-dist", "fixture.Main", listOf(applicationJar()),
+            listOf("-Dmessage=default"), temp.resolve("installed"),
+        )
+        val cases = listOf(
+            emptyMap<String, String>() to "default",
+            mapOf("JAVA_OPTS" to "", "MY_APP_OPTS" to "") to "default",
+            mapOf("JAVA_OPTS" to "  \t  ", "MY_APP_OPTS" to " ") to "default",
+            mapOf("JAVA_OPTS" to "-Dmessage=shared") to "shared",
+            mapOf("MY_APP_OPTS" to "-Dmessage=application") to "application",
+            mapOf("JAVA_OPTS" to "-Dmessage=shared -Dextra=retained", "MY_APP_OPTS" to "-Dmessage=application") to
+                "application\nretained",
+        )
+        for ((options, expected) in cases) {
+            val (exitCode, output) = launch(root, "myApp", options)
+            assertEquals(7, exitCode, output)
+            assertEquals("$expected\ntwo words\nlast\n", output)
+        }
+    }
+
+    @Test
+    fun `runtime options preserve double quoted spaces quotes and metacharacters`() {
+        val root = assembleDistribution(
+            "my-app", "dist", "fixture.Main", listOf(applicationJar()), emptyList(), temp.resolve("installed"),
+        )
+        for (variable in listOf("JAVA_OPTS", "MY_APP_OPTS")) {
+            val (exitCode, output) = launch(root, "my-app", mapOf(
+                variable to "-Dmessage=\"hello \\\"quoted\\\" \\path $ % & | < > * ? !\"",
+            ))
+            assertEquals(7, exitCode, output)
+            assertEquals("hello \"quoted\" \\path $ % & | < > * ? !\ntwo words\nlast\n", output)
+        }
+    }
+
+    @Test
+    fun `Unix runtime options handle single quotes escapes and literal shell substitutions`() {
+        assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        val root = assembleDistribution(
+            "hello", "dist", "fixture.Main", listOf(applicationJar()), emptyList(), temp.resolve("installed"),
+        )
+        val cases = listOf(
+            "-Dmessage='single quoted words'" to "single quoted words",
+            "-Dmessage=escaped\\ words" to "escaped words",
+            "-Dmessage=before\" middle \"after" to "before middle after",
+            "-Dmessage=''" to "",
+            "-Dmessage=\"\"" to "",
+            "-Dmessage='\$(touch injected) `touch injected` \$APP_HOME *.jar ; & |'" to
+                "\$(touch injected) `touch injected` \$APP_HOME *.jar ; & |",
+            "-Dmessage=\"\$(touch injected)\"" to "\$(touch injected)",
+        )
+        for ((options, expected) in cases) {
+            val (exitCode, output) = launch(root, "hello", mapOf("HELLO_OPTS" to options))
+            assertEquals(7, exitCode, output)
+            assertEquals("$expected\ntwo words\nlast\n", output)
+            assertFalse(Files.exists(root.resolve("injected")))
+        }
+    }
+
+    @Test
+    fun `Unix rejects unmatched quotes and dangling escapes in either options variable`() {
+        assumeFalse(System.getProperty("os.name").startsWith("Windows"))
+        val root = assembleDistribution(
+            "hello", "dist", "fixture.Main", listOf(applicationJar()), emptyList(), temp.resolve("installed"),
+        )
+        for (variable in listOf("JAVA_OPTS", "HELLO_OPTS")) {
+            for (options in listOf("-Dmessage='unfinished", "-Dmessage=\"unfinished", "-Dmessage=unfinished\\")) {
+                val (exitCode, output) = launch(root, "hello", mapOf(variable to options))
+                assertEquals(1, exitCode, output)
+                assertTrue(output.contains("Unmatched quote or trailing backslash"), output)
+                assertFalse(output.contains("two words"), output)
+            }
+        }
+    }
+
+    @Test
+    fun `application names map to portable environment variables`() {
+        for ((name, variable) in mapOf(
+            "my-app" to "MY_APP_OPTS", "myApp" to "MY_APP_OPTS", "my.app" to "MY_APP_OPTS",
+            "my_app" to "MY_APP_OPTS", "HTTPServer" to "HTTP_SERVER_OPTS", "7zip" to "_7ZIP_OPTS",
+        )) {
+            assertEquals(variable, optsEnvironmentVariable(name))
+        }
+        val root = assembleDistribution(
+            "7zip", "dist", "fixture.Main", listOf(applicationJar()), emptyList(), temp.resolve("installed"),
+        )
+        val (exitCode, output) = launch(root, "7zip", mapOf("_7ZIP_OPTS" to "-Dmessage=numeric"))
+        assertEquals(7, exitCode, output)
+        assertEquals("numeric\ntwo words\nlast\n", output)
     }
 
     @Test
@@ -112,6 +195,24 @@ class DistributionTest {
         assertArrayEquals(firstZip, Files.readAllBytes(archiveDistribution(output, temp.resolve("zip"), zip = true)))
     }
 
+    private fun launch(root: Path, name: String, options: Map<String, String> = emptyMap()): Pair<Int, String> {
+        val command = if (System.getProperty("os.name").startsWith("Windows")) {
+            listOf("cmd.exe", "/d", "/c", "\"${root.resolve("bin/$name.bat")}\" \"two words\" last")
+        } else {
+            listOf(root.resolve("bin/$name").toString(), "two words", "last")
+        }
+        val process = ProcessBuilder(command).directory(root.toFile()).redirectErrorStream(true).apply {
+            environment().keys.removeIf {
+                it.uppercase() in setOf("JAVA_TOOL_OPTIONS", "JDK_JAVA_OPTIONS", "_JAVA_OPTIONS") ||
+                    it.endsWith("_OPTS", ignoreCase = true)
+            }
+            environment()["JAVA_HOME"] = System.getProperty("java.home")
+            environment().putAll(options)
+        }.start()
+        val output = process.inputStream.bufferedReader().readText().replace("\r\n", "\n")
+        return process.waitFor() to output
+    }
+
     private fun applicationJar(): Path {
         val source = Files.createDirectories(temp.resolve("source/fixture")).resolve("Main.java")
         Files.writeString(source, """
@@ -119,6 +220,7 @@ class DistributionTest {
             public class Main {
                 public static void main(String[] args) {
                     System.out.println(System.getProperty("message"));
+                    if (System.getProperty("extra") != null) System.out.println(System.getProperty("extra"));
                     for (String arg : args) System.out.println(arg);
                     System.exit(7);
                 }

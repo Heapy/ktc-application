@@ -130,7 +130,7 @@ is verified against Kotlin Toolchain 0.13.0; revalidate when upgrading the Toolc
 ./kotlin test -m application
 ./kotlin do distTar -m example
 ./kotlin do distZip -m example
-python3 scripts/smoke.py
+kotlinr scripts/smoke.main.kts
 ```
 
 Tests execute a real Java application from a path containing spaces and shell
@@ -138,6 +138,10 @@ metacharacters, check runtime option precedence/quoting and JVM options/argument
 codes, reject invalid configuration and classpath collisions, and inspect tar/zip
 contents, modes, and reproducibility.
 The smoke test extracts and runs the example with a real external runtime dependency.
+It requires the Kotlin 2.4.21 script runner (`kotlinr`) and a JDK on `PATH` or at
+`JAVA_HOME`. Its first run downloads dependencies and compiles the script; later runs
+use the script cache. For direct execution, run `chmod +x scripts/smoke.main.kts`
+and then `./scripts/smoke.main.kts`.
 CI runs these checks on Linux, macOS ARM64, and Windows.
 
 Licensed under [Apache-2.0](LICENSE).

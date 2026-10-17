@@ -18,10 +18,11 @@ jobs:
       - name: Package example (Unix)
         if: runner.os != 'Windows'
         run: |
-          ./kotlin do distTar -m example
-          ./kotlin do distZip -m example
+          ./kotlin "do" distTar -m example
+          ./kotlin "do" distZip -m example
       - name: Package example (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           ./kotlin.bat do distTar -m example
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
